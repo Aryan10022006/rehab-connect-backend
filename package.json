@@ -1,0 +1,15 @@
+{
+  "name": "rehab-connect-backend",
+  "version": "1.0.0",
+  "description": "Backend server for Rehab Connect",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "author": "Aryan Tamboli",
+  "license": "MIT"
+} 
