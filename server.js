@@ -29,6 +29,21 @@ const db = admin.firestore();
 app.use(cors());
 app.use(express.json());
 
+// Middleware to verify Firebase Auth token (for normal user/admin auth)
+const verifyFirebaseToken = async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.split('Bearer ')[1];
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    req.user = decodedToken;
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+};
+
 // Middleware to verify Firebase Auth token or admin email for bulk upload
 const verifyFirebaseTokenOrAdminEmail = async (req, res, next) => {
   try {
