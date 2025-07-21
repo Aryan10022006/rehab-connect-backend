@@ -25,7 +25,14 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-app.use(cors());
+const allowedOrigins = [
+  'https://rehab-connect-pi.vercel.app',
+  'http://localhost:3000'
+];
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true
+}));
 app.use(express.json({ limit: '10mb' }));
 
 // Middleware to verify Firebase Auth token (for normal user/admin auth)
