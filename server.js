@@ -35,9 +35,10 @@ const verifyFirebaseTokenOrAdminEmail = async (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: 'No token provided' });
     // If Bearer token is an email, treat as admin email for bulk upload
-    const token = authHeader.split('Bearer ')[1];
-    const adminUsers = process.env.ADMIN_USERS ? Object.keys(JSON.parse(process.env.ADMIN_USERS)) : [];
-    if (adminUsers.includes(token)) {
+    const token = authHeader.split('Bearer ')[1]?.trim().toLowerCase();
+    const adminUsers = process.env.ADMIN_USERS ? Object.keys(JSON.parse(process.env.ADMIN_USERS)).map(e => e.trim().toLowerCase()) : [];
+    console.log('Admin bulk upload token:', token, 'Allowed admins:', adminUsers);
+    if (token && adminUsers.includes(token)) {
       req.user = { email: token };
       return next();
     }
