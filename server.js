@@ -29,13 +29,19 @@ const db = admin.firestore();
 app.use(cors());
 app.use(express.json());
 
-// Middleware to verify Firebase Auth token
-const verifyFirebaseToken = async (req, res, next) => {
+// Middleware to verify Firebase Auth token or admin email for bulk upload
+const verifyFirebaseTokenOrAdminEmail = async (req, res, next) => {
   try {
-    const token = req.headers.authorization?.split('Bearer ')[1];
-    if (!token) {
-      return res.status(401).json({ error: 'No token provided' });
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: 'No token provided' });
+    // If Bearer token is an email, treat as admin email for bulk upload
+    const token = authHeader.split('Bearer ')[1];
+    const adminUsers = process.env.ADMIN_USERS ? Object.keys(JSON.parse(process.env.ADMIN_USERS)) : [];
+    if (adminUsers.includes(token)) {
+      req.user = { email: token };
+      return next();
     }
+    // Otherwise, treat as Firebase token
     const decodedToken = await admin.auth().verifyIdToken(token);
     req.user = decodedToken;
     next();
@@ -130,7 +136,7 @@ app.put('/api/clinics/:id', verifyFirebaseToken, verifyAdmin, async (req, res) =
 });
 
 // Admin route - Bulk upload
-app.post('/api/clinics/bulk', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+app.post('/api/clinics/bulk', verifyFirebaseTokenOrAdminEmail, verifyAdmin, async (req, res) => {
   try {
     const batch = db.batch();
     const clinics = req.body.map(clinic => ({
