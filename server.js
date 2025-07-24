@@ -144,20 +144,18 @@ app.get('/api/clinics/:id/reviews', async (req, res) => {
 
 app.post('/api/clinics/:id/reviews', verifyFirebaseToken, async (req, res) => {
   try {
-    const { text } = req.body;
+    const { text, rating } = req.body;
     if (!text || !text.trim()) return res.status(400).json({ error: 'Review text required' });
     const userName = req.user.name || req.user.email || 'User';
     const review = {
       text,
       userId: req.user.uid,
       userName,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      rating: typeof rating === 'number' ? rating : null
     };
-    const reviewRef = await db.collection('clinics').doc(req.params.id).collection('reviews').add(review);
-    // Increment review count
-    await db.collection('clinics').doc(req.params.id).update({
-      noOfReviews: admin.firestore.FieldValue.increment(1)
-    });
+    await db.collection('clinics').doc(req.params.id).collection('reviews').add(review);
+    await recalculateClinicReviews(req.params.id);
     // Return updated reviews
     const reviewsSnap = await db.collection('clinics').doc(req.params.id).collection('reviews').orderBy('createdAt', 'desc').get();
     const reviews = [];
@@ -174,13 +172,14 @@ app.post('/api/clinics/:id/reviews', verifyFirebaseToken, async (req, res) => {
 app.put('/api/clinics/:id/reviews/:reviewId', verifyFirebaseToken, async (req, res) => {
   try {
     const { id, reviewId } = req.params;
-    const { text } = req.body;
+    const { text, rating } = req.body;
     if (!text || !text.trim()) return res.status(400).json({ error: 'Review text required' });
     const reviewRef = db.collection('clinics').doc(id).collection('reviews').doc(reviewId);
     const reviewDoc = await reviewRef.get();
     if (!reviewDoc.exists) return res.status(404).json({ error: 'Review not found' });
     if (reviewDoc.data().userId !== req.user.uid) return res.status(403).json({ error: 'Not authorized' });
-    await reviewRef.update({ text });
+    await reviewRef.update({ text, rating: typeof rating === 'number' ? rating : null });
+    await recalculateClinicReviews(id);
     // Return updated reviews
     const reviewsSnap = await db.collection('clinics').doc(id).collection('reviews').orderBy('createdAt', 'desc').get();
     const reviews = [];
@@ -201,10 +200,7 @@ app.delete('/api/clinics/:id/reviews/:reviewId', verifyFirebaseToken, async (req
     if (!reviewDoc.exists) return res.status(404).json({ error: 'Review not found' });
     if (reviewDoc.data().userId !== req.user.uid) return res.status(403).json({ error: 'Not authorized' });
     await reviewRef.delete();
-    // Decrement review count
-    await db.collection('clinics').doc(id).update({
-      noOfReviews: admin.firestore.FieldValue.increment(-1)
-    });
+    await recalculateClinicReviews(id);
     // Return updated reviews
     const reviewsSnap = await db.collection('clinics').doc(id).collection('reviews').orderBy('createdAt', 'desc').get();
     const reviews = [];
@@ -370,22 +366,45 @@ app.post('/api/clinics/bulk', verifyFirebaseTokenOrAdminEmail, verifyAdmin, asyn
   }
 });
 
+// Helper to recalculate and update noOfReviews and average rating for a clinic
+async function recalculateClinicReviews(clinicId) {
+  const reviewsSnap = await db.collection('clinics').doc(clinicId).collection('reviews').get();
+  const reviews = [];
+  let sum = 0;
+  let count = 0;
+  reviewsSnap.forEach(doc => {
+    const data = doc.data();
+    reviews.push(data);
+    if (typeof data.rating === 'number' && !isNaN(data.rating)) {
+      sum += data.rating;
+      count++;
+    }
+  });
+  const avgRating = count > 0 ? sum / count : null;
+  await db.collection('clinics').doc(clinicId).update({
+    noOfReviews: reviews.length,
+    rating: avgRating
+  });
+}
+
 // User routes
 app.post('/api/user/history', verifyFirebaseToken, async (req, res) => {
   try {
     const { clinicId } = req.body;
     const userDoc = db.collection('users').doc(req.user.uid);
-    
     await userDoc.set({
       email: req.user.email,
       lastActive: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
-    
-    await userDoc.collection('history').add({
-      clinicId,
-      viewedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-    
+    // Upsert: if already exists, update timestamp; else add
+    const historyCol = userDoc.collection('history');
+    const existing = await historyCol.where('clinicId', '==', clinicId).limit(1).get();
+    if (!existing.empty) {
+      const docId = existing.docs[0].id;
+      await historyCol.doc(docId).update({ viewedAt: admin.firestore.FieldValue.serverTimestamp() });
+    } else {
+      await historyCol.add({ clinicId, viewedAt: admin.firestore.FieldValue.serverTimestamp() });
+    }
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to save history' });
@@ -566,6 +585,56 @@ app.post('/api/user/notifications/:notificationId/read', verifyFirebaseToken, as
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to mark notification as read' });
+  }
+});
+
+// Get current user's premium status
+app.get('/api/user/premium', verifyFirebaseToken, async (req, res) => {
+  try {
+    const userDoc = await db.collection('users').doc(req.user.uid).get();
+    const data = userDoc.exists ? userDoc.data() : {};
+    res.json({ premium: !!data.premium });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch premium status' });
+  }
+});
+
+// Admin: Set any user's premium status
+app.post('/api/admin/user/:uid/premium', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+  try {
+    const { premium } = req.body;
+    if (typeof premium !== 'boolean') return res.status(400).json({ error: 'premium must be boolean' });
+    await db.collection('users').doc(req.params.uid).set({ premium }, { merge: true });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update premium status' });
+  }
+});
+
+// --- Razorpay Integration (Dummy for Testing) ---
+const crypto = require('crypto');
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_1234567890abcdef';
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'dummysecret';
+
+// Verify Razorpay payment and set user as premium
+app.post('/api/payment/razorpay/verify', verifyFirebaseToken, async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ error: 'Missing payment details' });
+    }
+    // Create expected signature
+    const hmac = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET);
+    hmac.update(razorpay_order_id + '|' + razorpay_payment_id);
+    const expectedSignature = hmac.digest('hex');
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({ error: 'Invalid payment signature' });
+    }
+    // Mark user as premium
+    await db.collection('users').doc(req.user.uid).set({ premium: true }, { merge: true });
+    res.json({ success: true, premium: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Payment verification failed' });
   }
 });
 
